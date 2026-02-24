@@ -24,7 +24,9 @@ const {
   applyMovement,
   handlePhases,
   abortGameToLobby,
-  rebalanceLeaders
+  submitLeaderVote,
+  callConfidenceVote,
+  handleLeaderDisconnect
 } = require('./game/logic');
 const { sanitizeName } = require('./util/helpers');
 
@@ -151,6 +153,30 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('leaderVote', (payload = {}) => {
+    const m = getMembershipBySocket(socket.id);
+    if (!m) return;
+    const game = games.get(m.gameCode);
+    if (!game) return;
+
+    const result = submitLeaderVote(game, m.playerId, payload.candidateId);
+    if (!result.ok) {
+      socket.emit('errorMessage', { message: result.message });
+    }
+  });
+
+  socket.on('callConfidenceVote', () => {
+    const m = getMembershipBySocket(socket.id);
+    if (!m) return;
+    const game = games.get(m.gameCode);
+    if (!game) return;
+
+    const result = callConfidenceVote(game, m.playerId);
+    if (!result.ok) {
+      socket.emit('errorMessage', { message: result.message });
+    }
+  });
+
   socket.on('leaderSubmitHostages', (payload = {}) => {
     const m = getMembershipBySocket(socket.id);
     if (!m) return;
@@ -173,7 +199,7 @@ io.on('connection', (socket) => {
     if (!fromPlayer || !fromPlayer.connected) return;
 
     const text = typeof payload.text === 'string' ? payload.text.trim().slice(0, 220) : '';
-    const scope = payload.scope === 'room' ? 'room' : 'game';
+    const scope = payload.scope === 'room' ? 'room' : payload.scope === 'summit' ? 'summit' : 'game';
     if (!text) return;
 
     const messagePayload = {
@@ -187,6 +213,20 @@ io.on('connection', (socket) => {
 
     if (scope === 'game') {
       io.to(game.code).emit('chatMessage', messagePayload);
+      return;
+    }
+
+    if (scope === 'summit') {
+      if (game.phase !== 'leader_summit') return;
+      if (game.leaders[fromPlayer.room] !== fromPlayer.id) return;
+      const oppositeRoom = fromPlayer.room === 'A' ? 'B' : 'A';
+      const summitLeaders = [game.leaders[fromPlayer.room], game.leaders[oppositeRoom]];
+      summitLeaders.forEach((leaderId) => {
+        const leader = leaderId ? game.players.get(leaderId) : null;
+        if (leader && leader.connected) {
+          io.to(leader.socketId).emit('chatMessage', messagePayload);
+        }
+      });
       return;
     }
 
@@ -225,7 +265,10 @@ io.on('connection', (socket) => {
       game.hostId = nextHost?.id || null;
     }
 
-    rebalanceLeaders(game);
+    if (game.phase !== 'lobby' && (game.leaders[player.room] === player.id)) {
+      handleLeaderDisconnect(game, player.room);
+    }
+
     emitLobbyState(io, game);
     removeGameIfEmpty(game);
   });
