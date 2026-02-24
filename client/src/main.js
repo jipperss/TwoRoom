@@ -17,7 +17,9 @@ const state = {
   interactTargetId: null,
   menuOpen: false,
   keys: { up: false, down: false, left: false, right: false },
-  knownIntel: {}
+  knownIntel: {},
+  chatMessages: [],
+  activeSidebarTab: 'intel'
 };
 
 state.getKnownTeam = (playerId) => state.knownIntel[playerId]?.team || null;
@@ -82,6 +84,39 @@ function renderKnownIntel() {
     `;
     list.appendChild(li);
   });
+}
+
+function setSidebarTab(tabName) {
+  state.activeSidebarTab = tabName;
+  const intelActive = tabName === 'intel';
+  document.getElementById('intelTab').classList.toggle('active', intelActive);
+  document.getElementById('chatTab').classList.toggle('active', !intelActive);
+  document.getElementById('intelTabBtn').classList.toggle('active', intelActive);
+  document.getElementById('chatTabBtn').classList.toggle('active', !intelActive);
+}
+
+function renderChatFeed() {
+  const feed = document.getElementById('chatFeed');
+  feed.innerHTML = '';
+
+  state.chatMessages.forEach((msg) => {
+    const li = document.createElement('li');
+    li.className = 'chat-item';
+    if (msg.system) {
+      li.innerHTML = `<div class="chat-system">${msg.text}</div>`;
+      feed.appendChild(li);
+      return;
+    }
+
+    const scopeLabel = msg.scope === 'room' ? `Room ${msg.room}` : 'Game';
+    li.innerHTML = `
+      <div class="chat-meta">${msg.fromName} · ${scopeLabel}</div>
+      <div>${msg.text}</div>
+    `;
+    feed.appendChild(li);
+  });
+
+  feed.scrollTop = feed.scrollHeight;
 }
 
 const game = new Phaser.Game({
@@ -201,10 +236,19 @@ socket.on('gameStarted', (payload) => {
   state.role = payload.role;
   state.settings = payload.settings;
   state.latestRoomState = null;
+  state.chatMessages = [{ system: true, text: 'Game chat started.' }];
   restoreKnownIntel();
   setHidden('endScreen', true);
   toast(`Game started. You are ${payload.role.team} ${payload.role.roleName}`);
   renderSwapControls();
+});
+
+socket.on('chatMessage', (payload) => {
+  state.chatMessages.push(payload);
+  if (state.chatMessages.length > 120) {
+    state.chatMessages = state.chatMessages.slice(-120);
+  }
+  renderChatFeed();
 });
 
 socket.on('roomState', (payload) => {
@@ -317,6 +361,26 @@ document.getElementById('declineShareBtn').onclick = () => {
 document.getElementById('returnLobbyBtn').onclick = () => {
   setHidden('endScreen', true);
 };
+
+document.getElementById('intelTabBtn').onclick = () => setSidebarTab('intel');
+document.getElementById('chatTabBtn').onclick = () => setSidebarTab('chat');
+
+function sendChatMessage() {
+  const input = document.getElementById('chatMessageInput');
+  const scope = document.getElementById('chatScopeInput').value;
+  const text = input.value.trim();
+  if (!text) return;
+  socket.emit('chatMessage', { scope, text });
+  input.value = '';
+}
+
+document.getElementById('sendChatBtn').onclick = sendChatMessage;
+document.getElementById('chatMessageInput').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') {
+    e.preventDefault();
+    sendChatMessage();
+  }
+});
 
 window.addEventListener('keydown', (e) => {
   if (e.key === 'w' || e.key === 'ArrowUp') state.keys.up = true;

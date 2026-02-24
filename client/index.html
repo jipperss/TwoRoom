@@ -28,7 +28,12 @@
       .card { background:#111827; border:1px solid #374151; border-radius:12px; padding:18px; min-width:300px; }
       .hidden { display:none !important; }
       ul { padding-left: 18px; }
-      .intel-panel { padding: 16px; background: #1f2937; border-left: 1px solid #374151; overflow:auto; }
+      .intel-panel { padding: 16px; background: #1f2937; border-left: 1px solid #374151; overflow:auto; display:flex; flex-direction:column; }
+      .tabs { display:flex; gap:8px; margin-bottom: 12px; }
+      .tab-btn { flex:1; }
+      .tab-btn.active { background:#1d4ed8; }
+      .tab-content { display:none; }
+      .tab-content.active { display:block; }
       .intel-list { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
       .intel-item { background: #111827; border: 1px solid #374151; border-radius: 8px; padding: 8px 10px; }
       .intel-name { font-weight: 600; }
@@ -37,6 +42,10 @@
       .team-dot.blue { background: #60a5fa; }
       .team-dot.red { background: #f87171; }
       .team-dot.unknown { background: #94a3b8; }
+      .chat-feed { list-style:none; margin:10px 0; padding:0; display:flex; flex-direction:column; gap:8px; max-height:55vh; overflow:auto; }
+      .chat-item { background:#111827; border:1px solid #374151; border-radius:8px; padding:8px; }
+      .chat-meta { font-size:12px; color:#93c5fd; margin-bottom:4px; }
+      .chat-system { color:#fca5a5; font-size:13px; }
     </style>
   </head>
   <body>
@@ -98,9 +107,27 @@
         </div>
       </div>
       <div class="intel-panel">
-        <h3>Known Intel</h3>
-        <div class="section" id="intelStatus">No intel yet.</div>
-        <ul id="intelList" class="intel-list"></ul>
+        <div class="tabs">
+          <button id="intelTabBtn" class="secondary tab-btn active">Intel</button>
+          <button id="chatTabBtn" class="secondary tab-btn">Chat Room</button>
+        </div>
+        <div id="intelTab" class="tab-content active">
+          <h3>Known Intel</h3>
+          <div class="section" id="intelStatus">No intel yet.</div>
+          <ul id="intelList" class="intel-list"></ul>
+        </div>
+        <div id="chatTab" class="tab-content">
+          <h3>Chat Room</h3>
+          <label>Chat scope
+            <select id="chatScopeInput">
+              <option value="game">Game-wide chat</option>
+              <option value="room">Current room only</option>
+            </select>
+          </label>
+          <ul id="chatFeed" class="chat-feed"></ul>
+          <input id="chatMessageInput" maxlength="220" placeholder="Type a message" />
+          <button id="sendChatBtn" class="secondary">Send</button>
+        </div>
       </div>
     </div>
     <script type="module" src="/src/main.js"></script>
