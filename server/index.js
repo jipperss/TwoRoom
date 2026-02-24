@@ -163,6 +163,39 @@ io.on('connection', (socket) => {
     }
   });
 
+  socket.on('chatMessage', (payload = {}) => {
+    const m = getMembershipBySocket(socket.id);
+    if (!m) return;
+    const game = games.get(m.gameCode);
+    if (!game || game.phase === 'lobby') return;
+
+    const fromPlayer = game.players.get(m.playerId);
+    if (!fromPlayer || !fromPlayer.connected) return;
+
+    const text = typeof payload.text === 'string' ? payload.text.trim().slice(0, 220) : '';
+    const scope = payload.scope === 'room' ? 'room' : 'game';
+    if (!text) return;
+
+    const messagePayload = {
+      fromPlayerId: fromPlayer.id,
+      fromName: fromPlayer.name,
+      room: fromPlayer.room,
+      scope,
+      text,
+      at: Date.now()
+    };
+
+    if (scope === 'game') {
+      io.to(game.code).emit('chatMessage', messagePayload);
+      return;
+    }
+
+    Array.from(game.players.values()).forEach((player) => {
+      if (!player.connected || player.room !== fromPlayer.room) return;
+      io.to(player.socketId).emit('chatMessage', messagePayload);
+    });
+  });
+
   socket.on('disconnect', () => {
     const m = getMembershipBySocket(socket.id);
     if (!m) return;
