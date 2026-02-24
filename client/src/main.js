@@ -16,8 +16,73 @@ const state = {
   incomingRequest: null,
   interactTargetId: null,
   menuOpen: false,
-  keys: { up: false, down: false, left: false, right: false }
+  keys: { up: false, down: false, left: false, right: false },
+  knownIntel: {}
 };
+
+state.getKnownTeam = (playerId) => state.knownIntel[playerId]?.team || null;
+
+function intelStorageKey() {
+  if (!state.code || !state.yourId) return null;
+  return `tworoom:intel:${state.code}:${state.yourId}`;
+}
+
+function persistKnownIntel() {
+  const key = intelStorageKey();
+  if (!key) return;
+  localStorage.setItem(key, JSON.stringify(state.knownIntel));
+}
+
+function restoreKnownIntel() {
+  const key = intelStorageKey();
+  if (!key) return;
+  const raw = localStorage.getItem(key);
+  if (!raw) return;
+  try {
+    state.knownIntel = JSON.parse(raw) || {};
+  } catch {
+    state.knownIntel = {};
+  }
+}
+
+function renderKnownIntel() {
+  const status = document.getElementById('intelStatus');
+  const list = document.getElementById('intelList');
+  if (!state.players.length || !state.yourId) {
+    status.textContent = 'No intel yet.';
+    list.innerHTML = '';
+    return;
+  }
+
+  const others = state.players.filter((p) => p.id !== state.yourId);
+  if (!others.length) {
+    status.textContent = 'No other players.';
+    list.innerHTML = '';
+    return;
+  }
+
+  status.textContent = 'Only your discovered info is shown.';
+  list.innerHTML = '';
+  others.forEach((player) => {
+    const intel = state.knownIntel[player.id];
+    const team = intel?.team || null;
+    const roleName = intel?.roleName || null;
+
+    const li = document.createElement('li');
+    li.className = 'intel-item';
+
+    const dotClass = team === 'Blue' ? 'blue' : team === 'Red' ? 'red' : 'unknown';
+    const teamText = team || 'Unknown';
+    const roleText = roleName || '?';
+
+    li.innerHTML = `
+      <div class="intel-name">${player.name}</div>
+      <div class="intel-meta"><span class="team-dot ${dotClass}"></span>Team: ${teamText}</div>
+      <div class="intel-meta">Card: ${roleText}</div>
+    `;
+    list.appendChild(li);
+  });
+}
 
 const game = new Phaser.Game({
   type: Phaser.AUTO,
@@ -39,6 +104,7 @@ function renderLobby() {
     li.textContent = `${p.name} ${p.ready ? '✅' : '⬜'} ${p.id === state.hostId ? '(Host)' : ''}`;
     playerList.appendChild(li);
   });
+  renderKnownIntel();
 }
 
 function renderHud() {
@@ -118,10 +184,15 @@ socket.on('connect', () => {
 });
 
 socket.on('lobbyState', (payload) => {
+  const previousCode = state.code;
   state.code = payload.code;
   state.hostId = payload.hostId;
   state.players = payload.players;
   if (!state.yourId) state.yourId = socket.id;
+  if (previousCode && previousCode !== state.code) {
+    state.knownIntel = {};
+  }
+  restoreKnownIntel();
   renderLobby();
 });
 
@@ -130,6 +201,7 @@ socket.on('gameStarted', (payload) => {
   state.role = payload.role;
   state.settings = payload.settings;
   state.latestRoomState = null;
+  restoreKnownIntel();
   setHidden('endScreen', true);
   toast(`Game started. You are ${payload.role.team} ${payload.role.roleName}`);
   renderSwapControls();
@@ -153,6 +225,14 @@ socket.on('shareIncoming', (payload) => {
 });
 
 socket.on('shareResult', (payload) => {
+  state.knownIntel[payload.withPlayerId] = {
+    team: payload.payload.team || state.knownIntel[payload.withPlayerId]?.team || null,
+    roleName: payload.payload.roleName || state.knownIntel[payload.withPlayerId]?.roleName || null,
+    learnedAt: Date.now()
+  };
+  persistKnownIntel();
+  renderKnownIntel();
+
   const details = payload.type === 'color'
     ? `${payload.withName} is ${payload.payload.team}`
     : `${payload.withName} is ${payload.payload.team} ${payload.payload.roleName}`;
@@ -166,6 +246,7 @@ socket.on('gameEnded', (payload) => {
   document.getElementById('endReason').innerText = `${payload.reason} Crown: ${payload.crownRoom} / Claw: ${payload.clawRoom}`;
   setHidden('endScreen', false);
   handleInteractMenu(true);
+  renderKnownIntel();
 });
 
 socket.on('errorMessage', (payload) => {
