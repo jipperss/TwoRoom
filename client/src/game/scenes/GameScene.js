@@ -9,21 +9,21 @@ export class GameScene extends Phaser.Scene {
 
   create() {
     this.cameras.main.setBackgroundColor('#0b1220');
-    this.add.rectangle(250, 300, 400, 520, 0x1d4ed8, 0.15).setStrokeStyle(2, 0x3b82f6);
-    this.add.rectangle(750, 300, 400, 520, 0xef4444, 0.15).setStrokeStyle(2, 0xf87171);
-    this.add.text(220, 40, 'Room A', { fontSize: '20px', color: '#93c5fd' });
-    this.add.text(720, 40, 'Room B', { fontSize: '20px', color: '#fca5a5' });
+    this.roomPanel = this.add.rectangle(500, 300, 880, 520, 0x334155, 0.25).setStrokeStyle(2, 0x94a3b8);
+    this.roomLabel = this.add.text(430, 40, 'Room -', { fontSize: '24px', color: '#e2e8f0' });
   }
 
   update() {
     const snapshot = this.state.latestRoomState;
     if (!snapshot) return;
 
+    this.roomLabel.setText(`Room ${snapshot.room}`);
+
     const activeIds = new Set(snapshot.players.map((p) => p.id));
     snapshot.players.forEach((player) => {
       let entry = this.sprites.get(player.id);
       if (!entry) {
-        const color = player.id === this.state.yourId ? 0x22c55e : 0xe5e7eb;
+        const color = this.getPlayerColor(player.id);
         const circle = this.add.circle(player.x, player.y, 18, color);
         const label = this.add.text(player.x - 22, player.y - 34, player.name, { fontSize: '12px', color: '#ffffff' });
         entry = { circle, label, x: player.x, y: player.y };
@@ -34,7 +34,7 @@ export class GameScene extends Phaser.Scene {
       entry.y = Phaser.Math.Linear(entry.y, player.y, 0.35);
       entry.circle.setPosition(entry.x, entry.y);
       entry.label.setPosition(entry.x - 22, entry.y - 34);
-      entry.circle.setFillStyle(player.isBusy ? 0xf59e0b : (player.id === this.state.yourId ? 0x22c55e : 0xe5e7eb));
+      entry.circle.setFillStyle(player.isBusy ? 0xf59e0b : this.getPlayerColor(player.id));
     });
 
     Array.from(this.sprites.entries()).forEach(([id, entry]) => {
@@ -43,5 +43,13 @@ export class GameScene extends Phaser.Scene {
       entry.label.destroy();
       this.sprites.delete(id);
     });
+  }
+
+  getPlayerColor(playerId) {
+    if (playerId === this.state.yourId) return 0x22c55e;
+    const knownTeam = this.state.getKnownTeam?.(playerId);
+    if (knownTeam === 'Blue') return 0x60a5fa;
+    if (knownTeam === 'Red') return 0xf87171;
+    return 0xe5e7eb;
   }
 }
