@@ -6,6 +6,8 @@ const TICK_MS = 100;
 const SPEED_PER_TICK = 14;
 const INTERACTION_RADIUS = 80;
 const SWAP_TIMEOUT_MS = 15000;
+const LEADER_VOTE_TIMEOUT_MS = 12000;
+const LEADER_SUMMIT_TIMEOUT_MS = 10000;
 const COOLDOWN_MS = { color: 10000, card: 20000 };
 
 function validateSettings(raw) {
@@ -45,34 +47,80 @@ function resetBusy(game, playerIds = []) {
   }
 }
 
-function rebalanceLeaders(game) {
-  [ROOM_A, ROOM_B].forEach((room) => {
-    const connectedInRoom = Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
-    const ids = connectedInRoom.map((p) => p.id);
-    const existingOrder = game.leaderOrder[room].filter((id) => ids.includes(id));
-    const additions = ids.filter((id) => !existingOrder.includes(id));
-    game.leaderOrder[room] = [...existingOrder, ...additions];
-    if (!game.leaderOrder[room].length) {
-      game.leaders[room] = null;
-      return;
-    }
-    if (!game.leaders[room] || !ids.includes(game.leaders[room])) {
-      game.leaders[room] = game.leaderOrder[room][0];
-    }
-  });
+function connectedInRoom(game, room) {
+  return Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
 }
 
-function rotateLeaders(game) {
-  [ROOM_A, ROOM_B].forEach((room) => {
-    const order = game.leaderOrder[room];
-    if (!order.length) {
-      game.leaders[room] = null;
-      return;
+function hasMajority(votesForCandidate, connectedCount) {
+  return votesForCandidate > connectedCount / 2;
+}
+
+function pickFallbackLeader(game, room) {
+  const roomPlayers = connectedInRoom(game, room);
+  if (!roomPlayers.length) return null;
+
+  const counts = new Map();
+  Object.values(game.leaderVotes[room] || {}).forEach((candidateId) => {
+    if (roomPlayers.some((p) => p.id === candidateId)) {
+      counts.set(candidateId, (counts.get(candidateId) || 0) + 1);
     }
-    const currentIndex = game.leaders[room] ? order.indexOf(game.leaders[room]) : -1;
-    const nextIndex = (currentIndex + 1 + order.length) % order.length;
-    game.leaders[room] = order[nextIndex];
   });
+
+  if (!counts.size) {
+    return roomPlayers.map((p) => p.id).sort()[0];
+  }
+
+  return Array.from(counts.entries())
+    .sort((a, b) => {
+      if (b[1] !== a[1]) return b[1] - a[1];
+      return a[0].localeCompare(b[0]);
+    })[0][0];
+}
+
+function hasResolvedTargetLeaders(game) {
+  return [ROOM_A, ROOM_B].every((room) => !game.leaderVoteTargets[room] || Boolean(game.leaders[room]));
+}
+
+function startPlayingPhase(game, deadlineAt = null) {
+  game.phase = 'playing';
+  game.phaseEndsAt = deadlineAt || (Date.now() + game.settings.roundSeconds * 1000);
+  game.swapDeadlineAt = null;
+  game.playingResumeUntil = null;
+  game.leaderVoteTargets = { A: false, B: false };
+  game.leaderVotes = { A: {}, B: {} };
+  game.confidenceVotes = { A: {}, B: {} };
+}
+
+function startLeaderVotePhase(game, targets, resumeFromPlaying = false) {
+  if (resumeFromPlaying && game.phase === 'playing') {
+    game.playingResumeUntil = game.phaseEndsAt;
+  }
+  game.phase = 'leader_vote';
+  game.phaseEndsAt = Date.now() + LEADER_VOTE_TIMEOUT_MS;
+  game.swapDeadlineAt = null;
+  game.leaderVoteTargets = { A: Boolean(targets.A), B: Boolean(targets.B) };
+  game.leaderVotes = { A: {}, B: {} };
+  game.confidenceVotes = { A: {}, B: {} };
+  if (game.leaderVoteTargets.A) {
+    game.leaders.A = null;
+    game.leaderRound.A = 0;
+  }
+  if (game.leaderVoteTargets.B) {
+    game.leaders.B = null;
+    game.leaderRound.B = 0;
+  }
+}
+
+function ensureLeadersOrStartVote(game) {
+  const targets = {
+    A: !game.leaders[ROOM_A] || !connectedInRoom(game, ROOM_A).some((p) => p.id === game.leaders[ROOM_A]),
+    B: !game.leaders[ROOM_B] || !connectedInRoom(game, ROOM_B).some((p) => p.id === game.leaders[ROOM_B])
+  };
+  if (targets.A || targets.B) {
+    startLeaderVotePhase(game, targets, game.phase === 'playing');
+    return false;
+  }
+  return true;
 }
 
 function getPlayerRoomState(game, player) {
@@ -81,7 +129,7 @@ function getPlayerRoomState(game, player) {
     now: Date.now(),
     round: game.round,
     phase: game.phase,
-    timeLeftMs: Math.max(0, (game.phase === 'playing' ? game.phaseEndsAt : game.swapDeadlineAt) - Date.now()),
+    timeLeftMs: Math.max(0, (game.phaseEndsAt || game.swapDeadlineAt || 0) - Date.now()),
     room: player.room,
     leaderId: game.leaders[player.room],
     players: sameRoom.map((p) => ({
@@ -123,10 +171,10 @@ function startGame(io, game) {
   game.swapDeadlineAt = null;
   game.pendingHostages = { A: null, B: null };
   game.pendingRequest = null;
-  game.leaderOrder = { A: [], B: [] };
   game.leaders = { A: null, B: null };
-  rebalanceLeaders(game);
-  rotateLeaders(game);
+  game.leaderRound = { A: 0, B: 0 };
+  game.playingResumeUntil = null;
+  startLeaderVotePhase(game, { A: true, B: true });
 
   ids.forEach((id) => {
     const player = game.players.get(id);
@@ -139,8 +187,16 @@ function startGame(io, game) {
   });
 }
 
-function enterSwapPhase(game) {
-  game.phase = 'swap';
+function enterLeaderSummitPhase(game) {
+  game.phase = 'leader_summit';
+  game.phaseEndsAt = Date.now() + LEADER_SUMMIT_TIMEOUT_MS;
+  game.swapDeadlineAt = null;
+  game.pendingHostages = { A: null, B: null };
+}
+
+function enterExchangeCommitPhase(game) {
+  game.phase = 'exchange_commit';
+  game.phaseEndsAt = null;
   game.swapDeadlineAt = Date.now() + SWAP_TIMEOUT_MS;
   game.pendingHostages = { A: null, B: null };
 }
@@ -148,8 +204,12 @@ function enterSwapPhase(game) {
 function autoSelectHostages(game, room) {
   if (game.pendingHostages[room]) return;
   const pool = Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
-  const shuffled = pool.sort(() => Math.random() - 0.5);
-  const picks = shuffled.slice(0, Math.min(game.settings.hostagesPerRoom, pool.length)).map((p) => p.id);
+  const max = Math.min(game.settings.hostagesPerRoom, pool.length);
+  const leaderId = game.leaders[room];
+  const nonLeaderPool = pool.filter((p) => p.id !== leaderId);
+  const preferredPool = nonLeaderPool.length >= max ? nonLeaderPool : pool;
+  const shuffled = preferredPool.sort(() => Math.random() - 0.5);
+  const picks = shuffled.slice(0, max).map((p) => p.id);
   game.pendingHostages[room] = picks;
 }
 
@@ -176,17 +236,13 @@ function resolveSwap(io, game) {
   });
 
   resetBusy(game);
-  rebalanceLeaders(game);
-  rotateLeaders(game);
-
   if (game.round >= game.settings.rounds) {
     endGame(io, game);
     return;
   }
 
   game.round += 1;
-  game.phase = 'playing';
-  game.phaseEndsAt = Date.now() + game.settings.roundSeconds * 1000;
+  startLeaderVotePhase(game, { A: true, B: true });
   game.swapDeadlineAt = null;
   game.pendingHostages = { A: null, B: null };
 }
@@ -230,6 +286,12 @@ function endGame(io, game) {
   game.swapDeadlineAt = null;
   game.pendingHostages = { A: null, B: null };
   game.pendingRequest = null;
+  game.leaderVoteTargets = { A: false, B: false };
+  game.leaderVotes = { A: {}, B: {} };
+  game.confidenceVotes = { A: {}, B: {} };
+  game.playingResumeUntil = null;
+  game.leaders = { A: null, B: null };
+  game.leaderRound = { A: 0, B: 0 };
   emitLobbyState(io, game);
 }
 
@@ -249,8 +311,12 @@ function abortGameToLobby(io, game, message) {
   game.swapDeadlineAt = null;
   game.pendingHostages = { A: null, B: null };
   game.pendingRequest = null;
-  game.leaderOrder = { A: [], B: [] };
+  game.leaderVoteTargets = { A: false, B: false };
+  game.leaderVotes = { A: {}, B: {} };
+  game.confidenceVotes = { A: {}, B: {} };
+  game.playingResumeUntil = null;
   game.leaders = { A: null, B: null };
+  game.leaderRound = { A: 0, B: 0 };
   emitLobbyState(io, game);
 }
 
@@ -274,11 +340,36 @@ function applyMovement(game) {
 
 function handlePhases(io, game) {
   const now = Date.now();
-  if (game.phase === 'playing' && now >= game.phaseEndsAt) {
-    enterSwapPhase(game);
+  if (game.phase === 'leader_vote') {
+    if (now >= game.phaseEndsAt) {
+      [ROOM_A, ROOM_B].forEach((room) => {
+        if (game.leaderVoteTargets[room] && !game.leaders[room]) {
+          game.leaders[room] = pickFallbackLeader(game, room);
+          if (game.leaders[room]) game.leaderRound[room] = game.round;
+        }
+      });
+
+      if (hasResolvedTargetLeaders(game)) {
+        const resumeAt = game.playingResumeUntil;
+        startPlayingPhase(game, resumeAt && resumeAt > now ? resumeAt : null);
+      }
+    }
+    return;
   }
 
-  if (game.phase === 'swap') {
+  if (game.phase === 'playing' && now >= game.phaseEndsAt) {
+    if (ensureLeadersOrStartVote(game)) {
+      enterLeaderSummitPhase(game);
+    }
+    return;
+  }
+
+  if (game.phase === 'leader_summit' && now >= game.phaseEndsAt) {
+    enterExchangeCommitPhase(game);
+    return;
+  }
+
+  if (game.phase === 'exchange_commit') {
     if (!game.pendingHostages[ROOM_A] && now >= game.swapDeadlineAt) {
       autoSelectHostages(game, ROOM_A);
     }
@@ -398,7 +489,7 @@ function handleShareResponse(io, game, responderId, payload) {
 }
 
 function submitHostages(game, playerId, hostageIds) {
-  if (game.phase !== 'swap') return { ok: false, message: 'Not in swap phase.' };
+  if (game.phase !== 'exchange_commit') return { ok: false, message: 'Not in exchange commit phase.' };
   const player = game.players.get(playerId);
   if (!player) return { ok: false, message: 'Player missing.' };
   const room = player.room;
@@ -408,12 +499,71 @@ function submitHostages(game, playerId, hostageIds) {
   const roomPlayers = Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
   const validIds = unique.filter((id) => roomPlayers.some((p) => p.id === id));
   const max = Math.min(game.settings.hostagesPerRoom, roomPlayers.length);
+  const nonLeaderCount = roomPlayers.filter((p) => p.id !== playerId).length;
+  if (validIds.includes(playerId) && nonLeaderCount >= max) {
+    return { ok: false, message: 'Leaders must select other citizens when possible.' };
+  }
   if (validIds.length !== max) {
     return { ok: false, message: `Must submit exactly ${max} hostages.` };
   }
 
   game.pendingHostages[room] = validIds;
   return { ok: true };
+}
+
+function submitLeaderVote(game, playerId, candidateId) {
+  if (game.phase !== 'leader_vote') return { ok: false, message: 'Leader voting is closed.' };
+
+  const voter = game.players.get(playerId);
+  const candidate = game.players.get(candidateId);
+  if (!voter || !voter.connected || !candidate || !candidate.connected) {
+    return { ok: false, message: 'Invalid voter or candidate.' };
+  }
+  if (voter.room !== candidate.room) return { ok: false, message: 'Must vote within your room.' };
+  if (!game.leaderVoteTargets[voter.room]) return { ok: false, message: 'Your room is not currently voting.' };
+
+  game.leaderVotes[voter.room][voter.id] = candidate.id;
+
+  const roomPlayers = connectedInRoom(game, voter.room);
+  const votes = Object.values(game.leaderVotes[voter.room]);
+  const countForCandidate = votes.filter((id) => id === candidate.id).length;
+  if (hasMajority(countForCandidate, roomPlayers.length)) {
+    game.leaders[voter.room] = candidate.id;
+    game.leaderRound[voter.room] = game.round;
+  }
+
+  if (hasResolvedTargetLeaders(game)) {
+    const now = Date.now();
+    const resumeAt = game.playingResumeUntil;
+    startPlayingPhase(game, resumeAt && resumeAt > now ? resumeAt : null);
+  }
+
+  return { ok: true };
+}
+
+function callConfidenceVote(game, playerId) {
+  if (game.phase !== 'playing') return { ok: false, message: 'Confidence votes only during playing phase.' };
+  const player = game.players.get(playerId);
+  if (!player || !player.connected) return { ok: false, message: 'Player missing.' };
+
+  const room = player.room;
+  if (!game.leaders[room]) return { ok: false, message: 'No active leader to challenge.' };
+
+  game.confidenceVotes[room][player.id] = true;
+  const noConfidenceCount = Object.keys(game.confidenceVotes[room]).length;
+  const connectedCount = connectedInRoom(game, room).length;
+
+  if (hasMajority(noConfidenceCount, connectedCount)) {
+    startLeaderVotePhase(game, { A: room === ROOM_A, B: room === ROOM_B }, true);
+  }
+
+  return { ok: true };
+}
+
+function handleLeaderDisconnect(game, room) {
+  if (game.leaders[room]) {
+    startLeaderVotePhase(game, { A: room === ROOM_A, B: room === ROOM_B }, game.phase === 'playing');
+  }
 }
 
 module.exports = {
@@ -429,5 +579,7 @@ module.exports = {
   applyMovement,
   handlePhases,
   abortGameToLobby,
-  rebalanceLeaders
+  submitLeaderVote,
+  callConfidenceVote,
+  handleLeaderDisconnect
 };

@@ -69,11 +69,17 @@
             </label>
             <button id="startBtn">Start Game</button>
           </div>
+          <div class="section hidden" id="leaderVoteControls">
+            <h4>Leader Vote</h4>
+            <div id="leaderVoteOptions"></div>
+            <button id="submitLeaderVoteBtn" class="secondary">Submit Vote</button>
+          </div>
+          <div class="section"><button id="callConfidenceBtn" class="danger">Call No-Confidence Vote</button></div>
           <div class="section hidden" id="swapControls">
-            <h4>Swap Phase (Leader only)</h4>
+            <h4>Exchange Commit (Leader only)</h4>
             <div id="swapHelp"></div>
             <div id="hostageOptions"></div>
-            <button id="submitHostagesBtn" class="secondary">Submit Hostages</button>
+            <button id="submitHostagesBtn" class="secondary">Submit Outgoing Citizens</button>
           </div>
           <div class="section">
             <h4>Lobby</h4>
@@ -122,6 +128,7 @@
             <select id="chatScopeInput">
               <option value="game">Game-wide chat</option>
               <option value="room">Current room only</option>
+              <option value="summit" class="hidden">Leader summit only</option>
             </select>
           </label>
           <ul id="chatFeed" class="chat-feed"></ul>

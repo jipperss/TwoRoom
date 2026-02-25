@@ -19,7 +19,8 @@ const state = {
   keys: { up: false, down: false, left: false, right: false },
   knownIntel: {},
   chatMessages: [],
-  activeSidebarTab: 'intel'
+  activeSidebarTab: 'intel',
+  selectedLeaderCandidateId: null
 };
 
 state.getKnownTeam = (playerId) => state.knownIntel[playerId]?.team || null;
@@ -72,15 +73,12 @@ function renderKnownIntel() {
 
     const li = document.createElement('li');
     li.className = 'intel-item';
-
     const dotClass = team === 'Blue' ? 'blue' : team === 'Red' ? 'red' : 'unknown';
-    const teamText = team || 'Unknown';
-    const roleText = roleName || '?';
 
     li.innerHTML = `
       <div class="intel-name">${player.name}</div>
-      <div class="intel-meta"><span class="team-dot ${dotClass}"></span>Team: ${teamText}</div>
-      <div class="intel-meta">Card: ${roleText}</div>
+      <div class="intel-meta"><span class="team-dot ${dotClass}"></span>Team: ${team || 'Unknown'}</div>
+      <div class="intel-meta">Card: ${roleName || '?'}</div>
     `;
     list.appendChild(li);
   });
@@ -98,24 +96,17 @@ function setSidebarTab(tabName) {
 function renderChatFeed() {
   const feed = document.getElementById('chatFeed');
   feed.innerHTML = '';
-
   state.chatMessages.forEach((msg) => {
     const li = document.createElement('li');
     li.className = 'chat-item';
     if (msg.system) {
       li.innerHTML = `<div class="chat-system">${msg.text}</div>`;
-      feed.appendChild(li);
-      return;
+    } else {
+      const scopeLabel = msg.scope === 'room' ? `Room ${msg.room}` : msg.scope === 'summit' ? 'Leader Summit' : 'Game';
+      li.innerHTML = `<div class="chat-meta">${msg.fromName} · ${scopeLabel}</div><div>${msg.text}</div>`;
     }
-
-    const scopeLabel = msg.scope === 'room' ? `Room ${msg.room}` : 'Game';
-    li.innerHTML = `
-      <div class="chat-meta">${msg.fromName} · ${scopeLabel}</div>
-      <div>${msg.text}</div>
-    `;
     feed.appendChild(li);
   });
-
   feed.scrollTop = feed.scrollHeight;
 }
 
@@ -161,14 +152,33 @@ function renderHud() {
   setHidden('hud', false);
 }
 
+function renderLeaderVoteControls() {
+  const wrap = document.getElementById('leaderVoteControls');
+  if (!state.latestRoomState || state.latestRoomState.phase !== 'leader_vote') {
+    wrap.classList.add('hidden');
+    return;
+  }
+
+  wrap.classList.remove('hidden');
+  const options = document.getElementById('leaderVoteOptions');
+  options.innerHTML = '';
+
+  state.latestRoomState.players.forEach((p) => {
+    const row = document.createElement('label');
+    row.style.display = 'block';
+    row.innerHTML = `<input type="radio" name="leaderCandidate" value="${p.id}" ${state.selectedLeaderCandidateId === p.id ? 'checked' : ''}/> ${p.name}`;
+    options.appendChild(row);
+  });
+}
+
 function renderSwapControls() {
   const wrap = document.getElementById('swapControls');
-  if (!state.latestRoomState || state.latestRoomState.phase !== 'swap' || state.latestRoomState.leaderId !== state.yourId) {
+  if (!state.latestRoomState || state.latestRoomState.phase !== 'exchange_commit' || state.latestRoomState.leaderId !== state.yourId) {
     wrap.classList.add('hidden');
     return;
   }
   wrap.classList.remove('hidden');
-  document.getElementById('swapHelp').innerText = `Select ${state.settings?.hostagesPerRoom ?? 1} hostage(s) from Room ${state.latestRoomState.room}`;
+  document.getElementById('swapHelp').innerText = `Select ${state.settings?.hostagesPerRoom ?? 1} outgoing citizen(s) from Room ${state.latestRoomState.room}`;
   const options = document.getElementById('hostageOptions');
   options.innerHTML = '';
   state.latestRoomState.players
@@ -182,19 +192,34 @@ function renderSwapControls() {
     });
 }
 
+function renderGovernanceControls() {
+  const btn = document.getElementById('callConfidenceBtn');
+  const enabled = state.latestRoomState?.phase === 'playing' && Boolean(state.latestRoomState?.leaderId);
+  btn.disabled = !enabled;
+}
+
+function renderChatScopeOptions() {
+  const scope = document.getElementById('chatScopeInput');
+  const summitVisible = state.latestRoomState?.phase === 'leader_summit' && state.latestRoomState?.leaderId === state.yourId;
+  const summitOption = scope.querySelector('option[value="summit"]');
+  summitOption.classList.toggle('hidden', !summitVisible);
+  if (!summitVisible && scope.value === 'summit') {
+    scope.value = 'room';
+  }
+}
+
 function getClosestInRange() {
   if (!state.latestRoomState || !state.yourId) return null;
   const me = state.latestRoomState.players.find((p) => p.id === state.yourId);
   if (!me) return null;
+
   let best = null;
   state.latestRoomState.players.forEach((p) => {
     if (p.id === me.id) return;
     const dx = p.x - me.x;
     const dy = p.y - me.y;
     const d = Math.sqrt(dx * dx + dy * dy);
-    if (d <= 80 && (!best || d < best.d)) {
-      best = { id: p.id, name: p.name, d };
-    }
+    if (d <= 80 && (!best || d < best.d)) best = { id: p.id, d };
   });
   return best;
 }
@@ -224,9 +249,7 @@ socket.on('lobbyState', (payload) => {
   state.hostId = payload.hostId;
   state.players = payload.players;
   if (!state.yourId) state.yourId = socket.id;
-  if (previousCode && previousCode !== state.code) {
-    state.knownIntel = {};
-  }
+  if (previousCode && previousCode !== state.code) state.knownIntel = {};
   restoreKnownIntel();
   renderLobby();
 });
@@ -237,29 +260,30 @@ socket.on('gameStarted', (payload) => {
   state.settings = payload.settings;
   state.latestRoomState = null;
   state.chatMessages = [{ system: true, text: 'Game chat started.' }];
+  state.selectedLeaderCandidateId = null;
   restoreKnownIntel();
   setHidden('endScreen', true);
   toast(`Game started. You are ${payload.role.team} ${payload.role.roleName}`);
+  renderLeaderVoteControls();
   renderSwapControls();
+  renderGovernanceControls();
 });
 
 socket.on('chatMessage', (payload) => {
   state.chatMessages.push(payload);
-  if (state.chatMessages.length > 120) {
-    state.chatMessages = state.chatMessages.slice(-120);
-  }
+  if (state.chatMessages.length > 120) state.chatMessages = state.chatMessages.slice(-120);
   renderChatFeed();
 });
 
 socket.on('roomState', (payload) => {
   state.latestRoomState = payload;
   renderHud();
+  renderLeaderVoteControls();
   renderSwapControls();
-  if (payload.phase === 'ended') {
-    handleInteractMenu(true);
-  } else {
-    handleInteractMenu(false);
-  }
+  renderGovernanceControls();
+  renderChatScopeOptions();
+  if (payload.phase === 'ended') handleInteractMenu(true);
+  else handleInteractMenu(false);
 });
 
 socket.on('shareIncoming', (payload) => {
@@ -297,14 +321,8 @@ socket.on('errorMessage', (payload) => {
   toast(payload.message);
 });
 
-document.getElementById('createBtn').onclick = () => {
-  socket.emit('createGame', { name: nameInput.value });
-};
-
-document.getElementById('joinBtn').onclick = () => {
-  socket.emit('joinGame', { code: codeInput.value, name: nameInput.value });
-};
-
+document.getElementById('createBtn').onclick = () => socket.emit('createGame', { name: nameInput.value });
+document.getElementById('joinBtn').onclick = () => socket.emit('joinGame', { code: codeInput.value, name: nameInput.value });
 document.getElementById('readyBtn').onclick = () => {
   const me = state.players.find((p) => p.id === state.yourId);
   socket.emit('setReady', { ready: !(me?.ready) });
@@ -321,47 +339,54 @@ document.getElementById('startBtn').onclick = () => {
   });
 };
 
+document.getElementById('submitLeaderVoteBtn').onclick = () => {
+  const selected = document.querySelector('input[name="leaderCandidate"]:checked');
+  if (!selected) {
+    toast('Pick a candidate before submitting your vote.');
+    return;
+  }
+  state.selectedLeaderCandidateId = selected.value;
+  socket.emit('leaderVote', { candidateId: selected.value });
+  toast('Leader vote submitted.');
+};
+
+document.getElementById('callConfidenceBtn').onclick = () => {
+  socket.emit('callConfidenceVote');
+  toast('No-confidence vote called.');
+};
+
 document.getElementById('submitHostagesBtn').onclick = () => {
   const selected = Array.from(document.querySelectorAll('#hostageOptions input:checked')).map((el) => el.value);
   socket.emit('leaderSubmitHostages', { hostageIds: selected });
 };
 
 document.getElementById('shareColorBtn').onclick = () => {
-  if (state.interactTargetId) {
-    socket.emit('shareRequest', { toPlayerId: state.interactTargetId, type: 'color' });
-    state.menuOpen = false;
-    handleInteractMenu(false);
-  }
+  if (!state.interactTargetId) return;
+  socket.emit('shareRequest', { toPlayerId: state.interactTargetId, type: 'color' });
+  state.menuOpen = false;
+  handleInteractMenu(false);
 };
 
 document.getElementById('shareCardBtn').onclick = () => {
-  if (state.interactTargetId) {
-    socket.emit('shareRequest', { toPlayerId: state.interactTargetId, type: 'card' });
-    state.menuOpen = false;
-    handleInteractMenu(false);
-  }
+  if (!state.interactTargetId) return;
+  socket.emit('shareRequest', { toPlayerId: state.interactTargetId, type: 'card' });
+  state.menuOpen = false;
+  handleInteractMenu(false);
 };
 
 document.getElementById('acceptShareBtn').onclick = () => {
-  if (state.incomingRequest) {
-    socket.emit('shareResponse', { requestId: state.incomingRequest.requestId, accepted: true });
-  }
+  if (state.incomingRequest) socket.emit('shareResponse', { requestId: state.incomingRequest.requestId, accepted: true });
   state.incomingRequest = null;
   setHidden('incomingModal', true);
 };
 
 document.getElementById('declineShareBtn').onclick = () => {
-  if (state.incomingRequest) {
-    socket.emit('shareResponse', { requestId: state.incomingRequest.requestId, accepted: false });
-  }
+  if (state.incomingRequest) socket.emit('shareResponse', { requestId: state.incomingRequest.requestId, accepted: false });
   state.incomingRequest = null;
   setHidden('incomingModal', true);
 };
 
-document.getElementById('returnLobbyBtn').onclick = () => {
-  setHidden('endScreen', true);
-};
-
+document.getElementById('returnLobbyBtn').onclick = () => setHidden('endScreen', true);
 document.getElementById('intelTabBtn').onclick = () => setSidebarTab('intel');
 document.getElementById('chatTabBtn').onclick = () => setSidebarTab('chat');
 
@@ -393,10 +418,10 @@ window.addEventListener('keydown', (e) => {
     handleInteractMenu(false);
   }
 
-  if (state.latestRoomState?.phase === 'swap' && state.latestRoomState?.leaderId === state.yourId && e.key === 'h') {
+  if (state.latestRoomState?.phase === 'exchange_commit' && state.latestRoomState?.leaderId === state.yourId && e.key === 'h') {
     const ids = state.latestRoomState.players.filter((p) => p.id !== state.yourId).slice(0, state.settings?.hostagesPerRoom ?? 1).map((p) => p.id);
     socket.emit('leaderSubmitHostages', { hostageIds: ids });
-    toast('Hostages submitted using quick key H.');
+    toast('Outgoing citizens submitted using quick key H.');
   }
 });
 
@@ -411,5 +436,4 @@ setInterval(() => {
   socket.emit('input', state.keys);
 }, 100);
 
-// keep eslint/ts quiet about game variable
 window.__phaserGame = game;

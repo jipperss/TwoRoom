@@ -41,8 +41,12 @@ function createGameState(hostSocketId, hostName) {
     round: 0,
     phaseEndsAt: null,
     swapDeadlineAt: null,
-    leaderOrder: { A: [], B: [] },
+    leaderVoteTargets: { A: false, B: false },
+    leaderVotes: { A: {}, B: {} },
+    confidenceVotes: { A: {}, B: {} },
+    playingResumeUntil: null,
     leaders: { A: null, B: null },
+    leaderRound: { A: 0, B: 0 },
     pendingHostages: { A: null, B: null },
     pendingRequest: null
   };
