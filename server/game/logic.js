@@ -204,8 +204,12 @@ function enterExchangeCommitPhase(game) {
 function autoSelectHostages(game, room) {
   if (game.pendingHostages[room]) return;
   const pool = Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
-  const shuffled = pool.sort(() => Math.random() - 0.5);
-  const picks = shuffled.slice(0, Math.min(game.settings.hostagesPerRoom, pool.length)).map((p) => p.id);
+  const max = Math.min(game.settings.hostagesPerRoom, pool.length);
+  const leaderId = game.leaders[room];
+  const nonLeaderPool = pool.filter((p) => p.id !== leaderId);
+  const preferredPool = nonLeaderPool.length >= max ? nonLeaderPool : pool;
+  const shuffled = preferredPool.sort(() => Math.random() - 0.5);
+  const picks = shuffled.slice(0, max).map((p) => p.id);
   game.pendingHostages[room] = picks;
 }
 
@@ -495,6 +499,10 @@ function submitHostages(game, playerId, hostageIds) {
   const roomPlayers = Array.from(game.players.values()).filter((p) => p.connected && p.room === room);
   const validIds = unique.filter((id) => roomPlayers.some((p) => p.id === id));
   const max = Math.min(game.settings.hostagesPerRoom, roomPlayers.length);
+  const nonLeaderCount = roomPlayers.filter((p) => p.id !== playerId).length;
+  if (validIds.includes(playerId) && nonLeaderCount >= max) {
+    return { ok: false, message: 'Leaders must select other citizens when possible.' };
+  }
   if (validIds.length !== max) {
     return { ok: false, message: `Must submit exactly ${max} hostages.` };
   }
